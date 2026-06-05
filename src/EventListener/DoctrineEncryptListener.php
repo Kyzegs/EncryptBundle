@@ -8,6 +8,8 @@ use Doctrine\ORM\Events;
 use Doctrine\Persistence\Event\LifecycleEventArgs;
 use Doctrine\Persistence\ObjectManager;
 use ReflectionProperty;
+use SpecShaper\EncryptBundle\BlindIndex\BlindIndexMetadataProvider;
+use SpecShaper\EncryptBundle\BlindIndex\BlindIndexUpdater;
 use SpecShaper\EncryptBundle\Encryptors\EncryptorInterface;
 use SpecShaper\EncryptBundle\Exception\EncryptException;
 use Doctrine\Bundle\DoctrineBundle\Attribute\AsDoctrineListener;
@@ -48,7 +50,9 @@ class DoctrineEncryptListener implements DoctrineEncryptListenerInterface
         private readonly EncryptorInterface $encryptor,
         private readonly EntityManagerInterface $em,
         array $annotationArray,
-        bool $isDisabled
+        bool $isDisabled,
+        private readonly ?BlindIndexMetadataProvider $blindIndexMetadataProvider = null,
+        private readonly ?BlindIndexUpdater $blindIndexUpdater = null
     ) {
         $this->annotationArray = $annotationArray;
         $this->isDisabled = $isDisabled;
@@ -135,19 +139,30 @@ class DoctrineEncryptListener implements DoctrineEncryptListenerInterface
     /**
      * Process (encrypt/decrypt) entities fields.
      */
-    protected function processFields(ObjectManager $objectManager,object $entity, bool $isEncryptOperation, bool $isInsert): bool
+    protected function processFields(ObjectManager $objectManager, object $entity, bool $isEncryptOperation, bool $isInsert): bool
     {
         // Get the encrypted properties in the entity.
         $properties = $this->getEncryptedFields($objectManager, $entity);
+        $blindIndexes = $this->blindIndexMetadataProvider?->getForEntity($objectManager, $entity) ?? [];
 
         // If no encrypted properties, return false.
-        if (empty($properties)) {
+        if (empty($properties) && empty($blindIndexes)) {
             return false;
         }
 
         $unitOfWork = $objectManager->getUnitOfWork();
         $oid = spl_object_id($entity);
         $meta = $objectManager->getClassMetadata(get_class($entity));
+        $changeSet = $unitOfWork->getEntityChangeSet($entity);
+        $blindIndexesUpdated = false;
+
+        if ($isEncryptOperation && !empty($blindIndexes)) {
+            if (null === $this->blindIndexUpdater) {
+                throw new EncryptException('Cannot create blind indexes; no blind index updater is configured.');
+            }
+
+            $blindIndexesUpdated = $this->blindIndexUpdater->update($entity, $blindIndexes, $changeSet);
+        }
 
         foreach ($properties as $refProperty) {
 
@@ -156,29 +171,30 @@ class DoctrineEncryptListener implements DoctrineEncryptListenerInterface
             // Get the value in the entity.
             $value = $refProperty->getValue($entity);
 
-            // Skip any null values.
-            if (null === $value) {
-                continue;
-            }
-
             if (is_object($value)) {
                 throw new EncryptException('Cannot encrypt an object at '.$refProperty->class.':'.$refProperty->getName(), $value);
             }
 
             // Encryption is fired by onFlush event, else it is an onLoad event.
             if ($isEncryptOperation) {
-                $changeSet = $unitOfWork->getEntityChangeSet($entity);
-
                 // Encrypt value only if change has been detected by Doctrine (comparing unencrypted values, see postLoad flow)
                 if (isset($changeSet[$field])) {
-                    $encryptedValue = $this->encryptor->encrypt($value, $field);
-                    $refProperty->setValue($entity, $encryptedValue);
-                    $unitOfWork->recomputeSingleEntityChangeSet($meta, $entity);
+                    if (null !== $value) {
+                        $encryptedValue = $this->encryptor->encrypt($value, $field);
+                        $refProperty->setValue($entity, $encryptedValue);
 
-                    // Will be restored during postUpdate cycle for updates, or below for inserts
-                    $this->rawValues[$oid][$field] = $value;
+                        // Will be restored during postUpdate cycle for updates, or below for inserts
+                        $this->rawValues[$oid][$field] = $value;
+                    }
+
+                    $unitOfWork->recomputeSingleEntityChangeSet($meta, $entity);
                 }
             } else {
+                // Skip any null values.
+                if (null === $value) {
+                    continue;
+                }
+
                 // Decryption is fired by onLoad and postFlush events.
                 $decryptedValue = $this->decryptValue($value, $field);
                 $refProperty->setValue($entity, $decryptedValue);
@@ -186,6 +202,10 @@ class DoctrineEncryptListener implements DoctrineEncryptListenerInterface
                 // Tell Doctrine the original value was the decrypted one.
                 $unitOfWork->setOriginalEntityProperty($oid, $field, $decryptedValue);
             }
+        }
+
+        if ($isEncryptOperation && $blindIndexesUpdated) {
+            $unitOfWork->recomputeSingleEntityChangeSet($meta, $entity);
         }
 
         if ($isInsert && isset($this->rawValues[$oid])) {
@@ -238,7 +258,6 @@ class DoctrineEncryptListener implements DoctrineEncryptListenerInterface
         $encryptedFields = [];
 
         foreach ($properties as $key => $refProperty) {
-
             if ($this->isEncryptedProperty($refProperty)) {
                 $encryptedFields[$key] = $refProperty;
             }
@@ -249,7 +268,7 @@ class DoctrineEncryptListener implements DoctrineEncryptListenerInterface
         return $encryptedFields;
     }
 
-    private function isEncryptedProperty(ReflectionProperty $refProperty)
+    private function isEncryptedProperty(ReflectionProperty $refProperty): bool
     {
 
         // If PHP8, and has attributes.

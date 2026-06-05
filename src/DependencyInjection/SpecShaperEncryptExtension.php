@@ -33,7 +33,10 @@ class SpecShaperEncryptExtension extends Extension
             $encryptKey = $config['encrypt_key'];
         }
 
+        $blindIndexKey = $config['blind_index_key'] ?? $encryptKey;
+
         $container->setParameter($this->getAlias().'.encrypt_key', $encryptKey);
+        $container->setParameter($this->getAlias().'.blind_index_key', $blindIndexKey);
         $container->setParameter($this->getAlias().'.default_associated_data', $config['default_associated_data']);
         $container->setParameter($this->getAlias().'.method', $config['method']);
         $container->setParameter($this->getAlias().'.listener_class', $config['listener_class']);

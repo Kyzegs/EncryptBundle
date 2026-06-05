@@ -24,6 +24,7 @@ class Configuration implements ConfigurationInterface
         $rootNode
             ->children()
                 ->scalarNode('encrypt_key')->end()
+                ->scalarNode('blind_index_key')->defaultValue(null)->end()
                 ->scalarNode('default_associated_data')->defaultValue(null)->end()
                 ->scalarNode('method')->defaultValue('OpenSSL')->end()
                 ->scalarNode('listener_class')->defaultValue(DoctrineEncryptListener::class)->end()

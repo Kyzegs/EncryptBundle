@@ -92,6 +92,7 @@ Maker will have created a packages yaml file. The key is resolved in there.
 # app/config/packages/spec_shaper_encrypt.yaml
 spec_shaper_encrypt:
   encrypt_key: '%env(SPEC_SHAPER_ENCRYPT_KEY)%'
+  blind_index_key: '%env(SPEC_SHAPER_BLIND_INDEX_KEY)%' # Optional, defaults to encrypt_key when omitted.
   is_disabled: false # Turn this to true to disable the encryption.
   connections:   # Optional, define the connection name(s) for the listener
     - 'default'
@@ -112,6 +113,60 @@ If you want to define your own annotation/attribute, then this can be used to tr
 class name to the 'annotation_classes' option array.
 
 You can pass the class name of your own encyptor service using the optional encryptorClass option.
+
+### Unique constraints and lookups on encrypted values
+
+Encrypted values are randomized, so the same plaintext value will normally produce a different encrypted value every time.
+Do not put a useful unique constraint on the encrypted column itself. Instead, map a separate blind-index field and put the
+database unique constraint on that field.
+
+```php
+<?php
+
+use Doctrine\ORM\Mapping as ORM;
+use SpecShaper\EncryptBundle\Annotations\BlindIndex;
+use SpecShaper\EncryptBundle\Annotations\Encrypted;
+
+#[ORM\Column(type: 'string')]
+#[Encrypted]
+private string $email;
+
+#[ORM\Column(type: 'string', length: 64, unique: true, nullable: true)]
+#[BlindIndex(
+    sourceField: 'email',
+    normalizer: BlindIndex::NORMALIZE_LOWERCASE
+)]
+private ?string $emailLookupHash = null;
+```
+
+When `email` changes, the Doctrine listener encrypts the email and writes
+`hash_hmac('sha256', normalized email, blind_index_key)` to `emailLookupHash`.
+
+Available normalizers are:
+
+- `BlindIndex::NORMALIZE_NONE`
+- `BlindIndex::NORMALIZE_TRIM`
+- `BlindIndex::NORMALIZE_LOWERCASE`
+- `BlindIndex::NORMALIZE_UPPERCASE`
+
+You can also inject `SpecShaper\EncryptBundle\Hashers\BlindIndexHasherInterface` when you need to query by the encrypted
+value:
+
+```php
+$hash = $blindIndexHasher->hash('test@example.com', BlindIndex::NORMALIZE_LOWERCASE);
+
+$user = $userRepository->findOneBy([
+    'emailLookupHash' => $hash,
+]);
+```
+
+For best separation, configure `blind_index_key` with a secret distinct from `encrypt_key`.
+
+To build or rebuild lookup hashes for existing database rows, run:
+
+```
+$ bin/console encrypt:blind-index --manager=default
+```
 
 ### Alternative EncryptKeyEvent
 The EncryptKey can be set via a dispatched event listener, which overrides any .env or param.yml defined key.
@@ -295,4 +350,3 @@ $ bin/console encrypt:database decrypt connection
 The requried argument should be decrypt or encrypt.
 
 There is an option to define the database connection if you employ multiple connections in your application.
-

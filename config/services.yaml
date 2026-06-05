@@ -39,10 +39,22 @@ services:
             $encryptKey: '%spec_shaper_encrypt.encrypt_key%'
             $encryptorClass: '%spec_shaper_encrypt.encryptor_class%'
 
+    SpecShaper\EncryptBundle\Hashers\BlindIndexHasherInterface:
+        class: SpecShaper\EncryptBundle\Hashers\HmacBlindIndexHasher
+        arguments:
+            $key: '%spec_shaper_encrypt.blind_index_key%'
+
+    SpecShaper\EncryptBundle\BlindIndex\BlindIndexMetadataProvider: ~
+
+    SpecShaper\EncryptBundle\BlindIndex\BlindIndexUpdater: ~
+
     # CLI command to encrypt or decrypt all fields in a database
     SpecShaper\EncryptBundle\Command\EncryptDatabaseCommand:
         arguments:
             $annotationArray: '%spec_shaper_encrypt.annotation_classes%'
+
+    # CLI command to build or rebuild blind index fields
+    SpecShaper\EncryptBundle\Command\BlindIndexDatabaseCommand: ~
 
     # CLI command to generate a 256 bit encryption key
     SpecShaper\EncryptBundle\Command\GenKeyCommand:
